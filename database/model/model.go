@@ -104,6 +104,19 @@ type Setting struct {
 	Value string `json:"value" form:"value"`
 }
 
+// Registration represents a pending user registration request awaiting admin approval.
+type Registration struct {
+	Id        int    `json:"id" gorm:"primaryKey;autoIncrement"`
+	TgID      int64  `json:"tgId" gorm:"index"`
+	ChatID    int64  `json:"chatId"`
+	Username  string `json:"username"`
+	FirstName string `json:"firstName"`
+	LastName  string `json:"lastName"`
+	Name      string `json:"name"`
+	Status    string `json:"status" gorm:"default:pending;index"` // pending, approved, rejected
+	CreatedAt int64  `json:"createdAt"`
+}
+
 // Client represents a client configuration for Xray inbounds with traffic limits and settings.
 type Client struct {
 	ID         string `json:"id"`                           // Unique client identifier

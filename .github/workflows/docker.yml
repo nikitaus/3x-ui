@@ -4,11 +4,16 @@ permissions:
   contents: read
   packages: write
 
+# Disabled: Docker build is not needed for this fork
+# on:
+#   workflow_dispatch:
+#   push:
+#     tags:
+#       - "v*.*.*"
 on:
-  workflow_dispatch:
   push:
-    tags:
-      - "v*.*.*"
+    branches:
+      - disabled-never-trigger
 
 jobs:
   build:
