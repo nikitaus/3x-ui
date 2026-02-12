@@ -450,6 +450,23 @@ func (t *Tgbot) OnReceive() {
 		h.HandleMessage(func(ctx *th.Context, message telego.Message) error {
 			if userState, exists := userStates[message.Chat.ID]; exists {
 				switch userState {
+				case "awaiting_reg_name":
+					name := strings.TrimSpace(message.Text)
+					if name == "" || len(name) < 2 {
+						t.SendMsgToTgbot(message.Chat.ID, t.I18nBot("tgbot.messages.regNameTooShort"))
+						return nil
+					}
+					delete(userStates, message.Chat.ID)
+					t.handleRegistrationName(message.Chat.ID, message.From, name)
+					return nil
+				case "awaiting_reg_email":
+					email := strings.TrimSpace(message.Text)
+					if email == "" {
+						return nil
+					}
+					delete(userStates, message.Chat.ID)
+					t.handleRegistrationEmail(message.Chat.ID, email)
+					return nil
 				case "awaiting_id":
 					if client_Id == strings.TrimSpace(message.Text) {
 						t.SendMsgToTgbotDeleteAfter(message.Chat.ID, t.I18nBot("tgbot.messages.using_default_value"), 3, tu.ReplyKeyboardRemove())
@@ -617,8 +634,18 @@ func (t *Tgbot) answerCommand(message *telego.Message, chatId int64, isAdmin boo
 		msg += t.I18nBot("tgbot.commands.start", "Firstname=="+message.From.FirstName)
 		if isAdmin {
 			msg += t.I18nBot("tgbot.commands.welcome", "Hostname=="+hostname)
+			msg += "\n\n" + t.I18nBot("tgbot.commands.pleaseChoose")
+		} else {
+			// Check if non-admin user already has linked clients
+			traffics, err := t.inboundService.GetClientTrafficTgBot(message.From.ID)
+			if err == nil && len(traffics) > 0 {
+				msg += "\n\n" + t.I18nBot("tgbot.commands.pleaseChoose")
+			} else {
+				// No linked clients — start registration flow
+				t.startRegistrationFlow(chatId, message.From)
+				return
+			}
 		}
-		msg += "\n\n" + t.I18nBot("tgbot.commands.pleaseChoose")
 	case "status":
 		onlyMessage = true
 		msg += t.I18nBot("tgbot.commands.status")
@@ -1536,6 +1563,24 @@ func (t *Tgbot) answerCallback(callbackQuery *telego.CallbackQuery, isAdmin bool
 				}
 
 				t.addClient(callbackQuery.Message.GetChat().ID, message_text)
+			case "approve_reg":
+				t.approveRegistration(chatId, dataArray[1], callbackQuery.ID, callbackQuery.Message.GetMessageID())
+			case "confirm_reg":
+				if len(dataArray) >= 3 {
+					t.confirmRegistration(chatId, dataArray[1], dataArray[2], callbackQuery.ID, callbackQuery.Message.GetMessageID())
+				}
+			case "change_reg_email":
+				t.promptRegEmail(chatId, dataArray[1], callbackQuery.ID)
+			case "link_reg":
+				t.showLinkOptions(chatId, dataArray[1], callbackQuery.ID)
+			case "link_reg_to":
+				if len(dataArray) >= 3 {
+					t.linkRegistration(chatId, dataArray[1], dataArray[2], callbackQuery.ID, callbackQuery.Message.GetMessageID())
+				}
+			case "reject_reg":
+				t.rejectRegistration(chatId, dataArray[1], callbackQuery.ID, callbackQuery.Message.GetMessageID())
+			case "link_reg_cancel":
+				t.resendRegistrationButtons(chatId, dataArray[1], callbackQuery.ID)
 			}
 			return
 		} else {
@@ -1594,6 +1639,8 @@ func (t *Tgbot) answerCallback(callbackQuery *telego.CallbackQuery, isAdmin bool
 	case "get_banlogs":
 		t.sendCallbackAnswerTgBot(callbackQuery.ID, t.I18nBot("tgbot.buttons.getBanLogs"))
 		t.sendBanLogs(chatId, true)
+	case "reg_requests":
+		t.showPendingRegistrations(chatId, callbackQuery.ID)
 	case "client_traffic":
 		tgUserID := callbackQuery.From.ID
 		t.sendCallbackAnswerTgBot(callbackQuery.ID, t.I18nBot("tgbot.buttons.clientUsage"))
@@ -2175,6 +2222,9 @@ func (t *Tgbot) SendAnswer(chatId int64, msg string, isAdmin bool) {
 			tu.InlineKeyboardButton(t.I18nBot("tgbot.buttons.addClient")).WithCallbackData(t.encodeQuery("add_client")),
 		),
 		tu.InlineKeyboardRow(
+			tu.InlineKeyboardButton(t.I18nBot("tgbot.buttons.regRequests")).WithCallbackData(t.encodeQuery("reg_requests")),
+		),
+		tu.InlineKeyboardRow(
 			tu.InlineKeyboardButton(t.I18nBot("pages.settings.subSettings")).WithCallbackData(t.encodeQuery("admin_client_sub_links")),
 			tu.InlineKeyboardButton(t.I18nBot("subscription.individualLinks")).WithCallbackData(t.encodeQuery("admin_client_individual_links")),
 			tu.InlineKeyboardButton(t.I18nBot("qrCode")).WithCallbackData(t.encodeQuery("admin_client_qr_links")),
@@ -2560,6 +2610,9 @@ func (t *Tgbot) SendMsgToTgbotAdmins(msg string, replyMarkup ...telego.ReplyMark
 
 // SendReport sends a periodic report to admin chats.
 func (t *Tgbot) SendReport() {
+	// Clean up registration requests older than 24 hours
+	cleanExpiredRegistrations(24 * time.Hour)
+
 	runTime, err := t.settingService.GetTgbotRuntime()
 	if err == nil && len(runTime) > 0 {
 		msg := ""
