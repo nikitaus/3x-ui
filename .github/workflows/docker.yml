@@ -10,7 +10,10 @@ permissions:
 #   push:
 #     tags:
 #       - "v*.*.*"
-on: []
+on:
+  push:
+    branches:
+      - disabled-never-trigger
 
 jobs:
   build:
